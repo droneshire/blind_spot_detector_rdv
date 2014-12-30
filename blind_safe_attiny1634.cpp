@@ -35,7 +35,6 @@
 #include "MMA8452.h"
 
 #include "i2c.h"
-
 /************************************************************************/
 //PIN/PORT DEFINITIONS:
 /************************************************************************/
@@ -64,6 +63,9 @@
 #define MIN_SONAR_DISTANCE		200
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	50
+
+#define FAST_TOGGLE				1
+#define SLOW_TOGGLE				2
 
 #define INT1_PCINT		PCINT12
 #define INT2_PCINT		PCINT4
@@ -250,12 +252,12 @@ void setup()
 	else
 	{
 		accel_on = false;
-		while(1){toggle_led(1, 150);}
+		while(1){toggle_led(1, FAST_TOGGLE);}
 	}
 	
 	init_accelerometer();
 	_delay_ms(1500);
-	toggle_led(2, 500);
+	toggle_led(2, SLOW_TOGGLE);
 }
 
 
@@ -275,9 +277,15 @@ void toggle_led(uint8_t num_blinks, uint8_t milliseconds)
 	for(int i = 0; i< num_blinks; i++)
 	{
 		LED2_PORT |= (1 << LED_CNTL2);
-		_delay_ms(milliseconds);
+		if(milliseconds == FAST_TOGGLE)
+			_delay_ms(150);
+		else
+			_delay_ms(500);
 		LED2_PORT &= ~(1 << LED_CNTL2);
-		_delay_ms(milliseconds);
+		if(milliseconds == FAST_TOGGLE)
+			_delay_ms(150);
+		else
+			_delay_ms(500);
 	}
 	
 }
