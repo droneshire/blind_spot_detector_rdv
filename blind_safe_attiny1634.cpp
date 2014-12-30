@@ -13,12 +13,12 @@
 //#				        	  __________
 //#				INT_ACC1-----|			|-----SDA
 //#				INT_ACC2-----|	 MCU	|-----SCL
-//#				 TRIGGER-----|			|-----CE_REG
-//#					ECHO-----|			|-----LED_CTRL
-//#					CE_REG1--|			|-----MISO
-//#				BATT_READ----|			|-----MOSI
+//#				 TRIGGER-----|			|-----LED_CTRL1
+//#					ECHO-----|			|-----LED_CTRL2
+//#					 CE_REG--|			|-----MISO
+//#					SPARE----|			|-----MOSI
 //#					RESET----|			|-----SCK
-//#				VCC_SOLAR----|			|-----BR_CTRL
+//#					SONIC----|			|-----VBATT_OK
 //#					         |__________|
 //#
 //#
@@ -35,41 +35,35 @@
 #include "MMA8452.h"
 
 #include "i2c.h"
-#define RDV_DEBUG
-//#define RDV_DEBUG_ACC_DATA
 
 /************************************************************************/
 //PIN/PORT DEFINITIONS:
 /************************************************************************/
 #define TRIGGER			PORTA0	//OUTPUT
-#define CE_REG_LED		PORTA3	//OUTPUT SENSOR AND LED OUTPUT
-#define BATT_READ		PORTA6	//INPUT ADC
-#define BATT_RD_CNTL	PORTA7	//OUTPUT
+#define CE_REG			PORTA3	//OUTPUT 5V FROM STEP UP CONVERTER 
 #define INT2_ACC		PORTA4	//INPUT INTERRUPT DATA READY (PCIE1)
 #define LED_CNTL1		PORTA5	//OUTPUT PWM AMBER LED
-#define VCC_SOLAR		PORTB3	//INPUT ADC
-#define ECHO_3V3		PORTB0	//INPUT
-
-//#define TWO_LEDS			//TODO: define this when new LED is in place
-//#define BRIGHTNESS_CTNL	//TODO: define this if you want to control brightness based on daylight
-#define LED_CNTL2		0	//OUTPUT PWM RED LED		//TODO: add this pin somewhere
-#define CE_REG1_SOLAR	PORTC2	//OUTPUT OUTPUT SOLAR PANEL OUTPUT
+#define SPARE			PORTA6	//OUTPUT SPARE PIN
+#define SONIC_PWR		PORTA7	//OUTPUT TO POWER USS
+#define ECHO_3V3		PORTB0	//INPUT FROM USS
+#define LED_CNTL2		PORTB3	//OUTPUT PWM RED LED
 #define INT1_ACC		PORTC0	//INPUT INTERRUPT MOTION DETECTION (PCIE0)
+#define VBATT_OK		PORTC2	//INPUT BATTERY GOOD INDICATOR
 
-
-#define CE_REG1_PORT		PORTC
 #define LED1_PORT			PORTA
-#define LED2_PORT			PORTA
+#define LED2_PORT			PORTB
 #define CE_REG_PORT			PORTA
-#define BATT_RD_CNTL_PORT	PORTA
+#define VBATT_OK_PORT		PORTC
+#define SONIC_PWR_PORT		PORTA
 
 #define LED1_DDR		DDRA
+#define LED2_DDR		DDRB
 #define CE_REG_DDR		DDRA
-#define CE_REG1_DDR		DDRC
 
-#define MAX_SONAR_DISTANCE 500
-#define MIN_SONAR_DISTANCE 100
-#define LED_ON_TIME		   500
+#define MAX_SONAR_DISTANCE		500
+#define MIN_SONAR_DISTANCE		200
+#define LED_ON_TIME				500
+#define SONIC_BRINGUP_TIME_uS	50
 
 #define INT1_PCINT		PCINT12
 #define INT2_PCINT		PCINT4
@@ -99,41 +93,12 @@
 #define NUM_AXIS 3
 #define NUM_ACC_DATA (DATARATE * NUM_AXIS)
 
-typedef enum{
-	F80000 = 0,
-	F40000,
-	F20000,
-	F10000,
-	F5000,
-	F1250,
-	F625,
-	F156
-} AccOdr;
-
-/************************************************************************/
-//BATTERY/SOLAR CONSTANTS:
-/************************************************************************/
-#define LOW_BATTERY				3.5f
-#define CHARGED_BATTERY			3.8f
-#define DAYTIME					2.0f
-#define BATTERY_CHECK_INTERVAL  300
-
-/************************************************************************/
-//DATA STRUCTURES:
-/************************************************************************/
-typedef struct battery_t{
-	bool daylight;
-	long solar_vcc;
-	long battery_vcc;
-	long mcu_vcc;
-	uint8_t brightness;
-}Battery;
 
 /************************************************************************/
 //PROTOTYPES
 /************************************************************************/
-void toggle_led(uint8_t blinks);
-void shut_down_sensor(bool ce_led);
+void toggle_led(uint8_t num_blinks, uint8_t milliseconds);
+void shut_down_uss_leds(bool ce_led);
 void init_accelerometer(void);
 void initialize_pins(void);
 bool check_moving(void);
@@ -142,7 +107,6 @@ bool clear_acc_ints(void);
 void disable_int(uint8_t pcie);
 void enable_int(uint8_t pcie);
 void deep_sleep_handler(bool still);
-void ISR_notify_timer(void);
 void setup(void);
 
 /************************************************************************/
@@ -150,10 +114,8 @@ void setup(void);
 /************************************************************************/
 static volatile bool got_slp_wake;
 static volatile bool got_data_acc;
-static volatile bool _sleep;
+static volatile bool go_to_sleep;
 static volatile bool driving;
-static volatile bool time_up;
-static volatile uint16_t batt_counter;
 static volatile uint8_t intSource;
 
 static bool accel_on;
@@ -161,11 +123,8 @@ static unsigned long usec;
 static float range;
 
 static int16_t accelCount[3];  				// Stores the 12-bit signed value
-static float accelG[3];  						// Stores the real accel value in g's
-AccOdr f_odr = (AccOdr)DATARATE;
 MMA8452 accel = MMA8452(ACCEL_ADDR);
 Ultrasonic ultrasonic;
-Battery battery;
 
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -195,72 +154,45 @@ int main(void)
 				driving = check_moving();	//we will go through one more time before, maybe break out here?
 				if(!driving)
 				{
-					shut_down_sensor(false);
+					shut_down_uss_leds(true);
 				}
 			}
 			else
-			driving = true;
-			
-			_sleep = true;
-			
-			if(++batt_counter > BATTERY_CHECK_INTERVAL)
 			{
-				batt_counter = 0;
-				//handle_battery_mgmt();	//TODO: battery management
+				driving = true;
 			}
 			
-			CE_REG_PORT |= (1 << CE_REG_LED);	//enable power to sonar and LED
-			_delay_us(50);	//TODO: may need to adjust delay here to optimize bringup time
+			go_to_sleep = true;
+			
+			//enable power to sonar
+			SONIC_PWR_PORT |= (1 << SONIC_PWR);
+			_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
 			
 			range = 0;
 			disable_int(ALL_INTS);
 			usec = ultrasonic.timing(50000);
 			range = ultrasonic.convert(usec, ultrasonic.CM);
 			
-			if(range < MAX_SONAR_DISTANCE && range >= MIN_SONAR_DISTANCE)
+			if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 			{
-//#ifdef TWO_LEDS
-				//if(Battery.battery_vcc < LOW_BATTERY)
-					//LED2_PORT |= (1 << LED_CNTL2);
-				//else
-					//LED1_PORT |= (1 << LED_CNTL1);
-//#else
-				//LED1_PORT |= (1 << LED_CNTL1);
-//#endif
-				////TODO: brightness control
-				////#ifdef BRIGHTNESS_CTNL
-				////#ifdef TWO_LEDS
-				////if(Battery.battery_vcc < LOW_BATTERY)
-				////analogWrite(LED2_PIN, Battery.brightness);
-				////else
-				////analogWrite(LED1_PIN, Battery.brightness);
-				////#else
-				////analogWrite(LED1_PIN, Battery.brightness);
-				////#endif
-				////#endif
+				if(((1 << VBATT_OK) & VBATT_OK_PORT))
+					LED1_PORT |= (1 << LED_CNTL1);
+				else
+					LED2_PORT |= (1 << LED_CNTL2);	//use red LED if low battery
 
-				LED1_PORT |= (1 << LED_CNTL1);
+				//turn off the power to sonar only
+				shut_down_uss_leds(false);
+				
 				_delay_ms(LED_ON_TIME);	//TODO: some sort of sleep mode during this time?
-				//turn off the power to sonar and led
-				CE_REG_PORT &= ~(1 << CE_REG_LED);
+					
 				enable_int(ALL_INTS);
 			}
 			else
+			{
 				enable_int(ALL_INTS);
+			}
 			
-			LED1_PORT &= ~(1 << LED_CNTL1);
-			
-			
-
-//#ifdef TWO_LEDS
-			//if(Battery.battery_vcc < LOW_BATTERY)
-				//LED2_PORT &= ~(1 << LED_CNTL2);
-			//else
-				//LED1_PORT &= ~(1 << LED_CNTL1);
-//#else
-			//LED1_PORT &= ~(1 << LED_CNTL1);
-//#endif
-			
+			shut_down_uss_leds(true);
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
@@ -272,11 +204,13 @@ int main(void)
 			{
 				//handle_battery_mgmt();	//TODO: battery management
 			}
-			_sleep = true;		//go into driving state mode
+			go_to_sleep = true;		//go into driving state mode
 		}
 		
-		if(_sleep)
+		//UNIT NEEDS TO GO TO DEEP SLEEP
+		if(go_to_sleep)
 		{
+			shut_down_uss_leds(true);
 			deep_sleep_handler(driving);
 		}
     }
@@ -287,7 +221,6 @@ int main(void)
 //#
 //# Description: 	Initialization function.  Configures IO pins, enables interrupts.
 //#					Heartbeat checks the accelerometerS.
-//#					in debug, it can print out initialization stats.
 //#
 //# Parameters:		None
 //#
@@ -300,24 +233,13 @@ void setup()
 	//initialize the pins
 	initialize_pins();
 	_delay_ms(1500);
+	shut_down_uss_leds(true);
 	
 	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
 	got_slp_wake = false;
 	got_data_acc = false;
-	_sleep = false;
-	driving = false;
-	
-	//toggle_led(2);
-	_delay_ms(500);
-	shut_down_sensor(false);
-	
-	//initialize battery monitoring system
-	battery.battery_vcc = 0;
-	battery.solar_vcc = 0;
-	battery.daylight = false;
-	battery.mcu_vcc = 0;
-	battery.brightness = 255;	//default to full brightness
-	batt_counter = 0;
+	go_to_sleep = false;
+	driving = false;	
 	
 	ADCSRA = 0;	//disable ADC
 	
@@ -328,35 +250,34 @@ void setup()
 	else
 	{
 		accel_on = false;
+		while(1){toggle_led(1, 150);}
 	}
 	
 	init_accelerometer();
 	_delay_ms(1500);
-	toggle_led(2);
+	toggle_led(2, 500);
 }
 
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
 //#
-//# Description: 	Toggles the LED specified number of times
+//# Description: 	Toggles the RED LED specified number of times at specified frequency
 //#
-//# Parameters:		Number of blinks
+//# Parameters:		Number of blinks, length in ms of blink
 //#
 //# Returns: 		Nothing
 //#
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
-void toggle_led(uint8_t blinks)
+void toggle_led(uint8_t num_blinks, uint8_t milliseconds)
 {
-	LED1_DDR |= (1 << LED_CNTL1);
-	CE_REG_DDR |= (1 << CE_REG_LED);
-	LED1_PORT |= (1 << LED_CNTL1);
-	CE_REG_PORT |= (1 << CE_REG_LED);
-	for(int i = 0; i< blinks; i++)
+	LED2_DDR |= (1 << LED_CNTL2);
+	
+	for(int i = 0; i< num_blinks; i++)
 	{
-		LED1_PORT |= (1 << LED_CNTL1);
-		_delay_ms(500);
-		LED1_PORT &= ~(1 << LED_CNTL1);
-		_delay_ms(500);
+		LED2_PORT |= (1 << LED_CNTL2);
+		_delay_ms(milliseconds);
+		LED2_PORT &= ~(1 << LED_CNTL2);
+		_delay_ms(milliseconds);
 	}
 	
 }
@@ -409,21 +330,16 @@ bool check_moving()
 //# Returns: 		Nothing
 //#
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
-void shut_down_sensor(bool ce_led)
+void shut_down_uss_leds(bool leds)
 {
-	//turn off the LED and sensor/led power
-	LED1_PORT &= ~(1 << LED_CNTL1);
-	if(ce_led)
-		CE_REG_PORT &= ~(1 << CE_REG_LED);
-	else
-		CE_REG_PORT |= (1 << CE_REG_LED);
-	//turn on charging //TODO: 
-	//CE_REG1_PORT |= (1 << CE_REG1_SOLAR);
-	CE_REG1_PORT &= ~(1 << CE_REG1_SOLAR);
-	
-	//disable battery reads
-	BATT_RD_CNTL_PORT &= ~(1 << BATT_RD_CNTL);
-	ADCSRA = 0;	//disable ADC
+	if(leds)
+	{
+		//turn off the LED and led power
+		LED1_PORT &= ~(1 << LED_CNTL1);
+		LED2_PORT &= ~(1 << LED_CNTL2);
+	}
+	//disable USS
+	SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -454,23 +370,19 @@ void init_accelerometer(){
 void initialize_pins()
 {
 	//outputs
-	DDRA =  (1 << CE_REG_LED) | (1 << TRIGGER) | (1 << BATT_RD_CNTL) | (1 << LED_CNTL1);
-	DDRC =  (1 << CE_REG1_SOLAR);
+	DDRA =  (1 << TRIGGER) | (1 << CE_REG) | (1 << LED_CNTL1) | (1 << SPARE) | (1 << SONIC_PWR);
+	DDRB = (1 << LED_CNTL2);
 	PORTA = 0;	
 	PORTB = 0;
-	PORTC &= ~(1 << CE_REG1_SOLAR);
 	
 	//inputs
-	DDRA &=  ~((1 << BATT_READ) | (1 << INT2_ACC) | (1 << SOFT_SDA) | (1 << SOFT_SCL));
-	PORTA |= (1 << INT2_ACC);	//activate pullups
+	DDRA &=  ~(1 << INT2_ACC);
+	DDRB &=  ~(1 << ECHO_3V3);
+	DDRC &=  ~((1 << INT1_ACC) | (1 << VBATT_OK));
 	
-	DDRB &=  ~((1 << VCC_SOLAR) | (1 << ECHO_3V3));
-	DDRB |= (1 << ECHO_3V3);
-	
-	DDRC &=  ~(1 << INT1_ACC);
-	PORTC |= (1 << INT1_ACC);	//activate pullups except on I2C pins
-	
-	//TODO: PWM SETUP
+	//input w/ pull-ups
+	PORTA |= (1 << INT2_ACC);
+	PORTC |= (1 << INT1_ACC);
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -494,7 +406,6 @@ void deep_sleep_handler(bool driving)
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 	sleep_enable();
 	cli();
-	//sleep_bod_disable();
 	if(driving)
 	{
 		enable_int(INT2_PCIE);
@@ -506,11 +417,11 @@ void deep_sleep_handler(bool driving)
 		disable_int(INT2_PCIE);
 	}
 	if(!clear_acc_ints())
-	return;
+		return;
 	sei();
 	sleep_cpu();
 	sleep_disable();
-	_sleep = false;
+	go_to_sleep = false;
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -527,11 +438,11 @@ void deep_sleep_handler(bool driving)
 bool clear_acc_ints()
 {
 	if(accel.readRegister(INT_SOURCE) == ~0u)
-	return false;
+		return false;
 	if(accel.readRegister(FF_MT_SRC) == ~0u)
-	return false;
+		return false;
 	accel.readAccelData(accelCount);
-	return true;
+		return true;
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -627,7 +538,6 @@ ISR(PCINT2_vect)
 	if((INT1_PIN & (1 << INT1_ACC)))
 	{
 		got_slp_wake = true;
-		
 	}
 	sei();
 }
