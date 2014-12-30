@@ -24,9 +24,9 @@ unsigned char MMA8452::writeRegister(unsigned char address, unsigned char data)
 {
   i2c_send_start();
   if(!i2c_send_byte((mAddress<<1))) //; // write 0xB4
-	return ~0u;
+	return ~0;
   if(!i2c_send_byte(address))	// Write register address
-	return ~0u;
+	return ~0;
   i2c_send_byte(data);
   i2c_send_stop();
   return 1;
@@ -37,12 +37,12 @@ unsigned char MMA8452::readRegister(uint8_t address)
   unsigned char data = 0;
   i2c_send_start();
   if(!i2c_send_byte((mAddress<<1))) //; // write 0xB4
-	return ~0u;
+	return ~0;
   if(!i2c_send_byte(address))	// Write register address
-	return ~0u;
+	return ~0;
   i2c_send_start();
   if(!i2c_send_byte((mAddress<<1)|0x01)) // Write 0x3D
-	return ~0u;
+	return ~0;
   data = i2c_receive_byte(true);	// Get MSB result
   i2c_send_stop();
   return data;
