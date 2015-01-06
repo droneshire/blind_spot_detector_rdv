@@ -63,6 +63,7 @@
 #define MIN_SONAR_DISTANCE		200
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	50
+#define SONAR_SAMPLE_RATE_mS	20
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
 
 #define FAST_TOGGLE				1
@@ -177,27 +178,34 @@ int main(void)
 				
 				range = 0;
 				disable_int(ALL_INTS);
-				usec = ultrasonic.timing(50000);
-				range = ultrasonic.convert(usec, ultrasonic.CM);
 				
-				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+				while(1)
 				{
-					control_leds(true, true);	// amber LED on, normal use
+					usec = ultrasonic.timing(50000);
+					range = ultrasonic.convert(usec, ultrasonic.CM);
+					if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+					{
+						control_leds(true, true);	// amber LED on, normal use
+					}
+					else
+					{
+						break;
+					}
 
 					//turn off the power to sonar only
 					shut_down_uss_leds(false);
 					
-					_delay_ms(LED_ON_TIME);	//TODO: some sort of sleep mode during this time?
+					_delay_ms(SONAR_SAMPLE_RATE_mS);
 				}
 
 				enable_int(ALL_INTS);
+				shut_down_uss_leds(true);	// if low battery, leave red light on
 			}
 			else
 			{
 				control_leds(true, false);	// if low battery, leave red light on
+				shut_down_uss_leds(false);	// if low battery, leave red light on
 			}
-			
-			shut_down_uss_leds(((1 << VBATT_OK) & VBATT_OK_PORT));	// if low battery, leave red light on
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
