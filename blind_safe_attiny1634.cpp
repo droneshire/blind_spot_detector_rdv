@@ -67,6 +67,7 @@
 
 #define FAST_TOGGLE				1
 #define SLOW_TOGGLE				2
+#define WORKING_TOGGLES			10		//number of blinks for when coming out of no-motion sleep
 
 #define INT1_PCINT		PCINT12
 #define INT2_PCINT		PCINT4
@@ -202,12 +203,12 @@ int main(void)
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
 		if(got_slp_wake)
 		{
+			// always indicate to the driver that we are alive when starting movement
+			if(!driving)
+				toggle_led(WORKING_TOGGLES, FAST_TOGGLE);	
+				
 			got_slp_wake = false;
 			driving = check_moving();
-			if(driving)
-			{
-				//handle_battery_mgmt();	//TODO: battery management
-			}
 			go_to_sleep = true;		//go into driving state mode
 		}
 		
@@ -247,14 +248,14 @@ void setup()
 	
 	ADCSRA = 0;	//disable ADC
 	
-	if (accel.readRegister(WHO_AM_I) == 0x2A) 						// WHO_AM_I should always be 0x2A
+	if (accel.readRegister(WHO_AM_I) == 0x2A) 	// WHO_AM_I should always be 0x2A
 	{
 		accel_on = true;
 	}
 	else
 	{
 		accel_on = false;
-		while(1){toggle_led(1, FAST_TOGGLE);}
+		while(1){toggle_led(1, FAST_TOGGLE);}	// if accelerometer is broken, just blink continually
 	}
 	
 	init_accelerometer();
