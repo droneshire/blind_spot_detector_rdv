@@ -63,6 +63,7 @@
 #define MIN_SONAR_DISTANCE		200
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	50
+#define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
 
 #define FAST_TOGGLE				1
 #define SLOW_TOGGLE				2
@@ -100,6 +101,7 @@
 //PROTOTYPES
 /************************************************************************/
 void toggle_led(uint8_t num_blinks, uint8_t milliseconds);
+void control_leds(bool on, bool amber);
 void shut_down_uss_leds(bool ce_led);
 void init_accelerometer(void);
 void initialize_pins(void);
@@ -166,35 +168,35 @@ int main(void)
 			
 			go_to_sleep = true;
 			
-			//enable power to sonar
-			SONIC_PWR_PORT |= (1 << SONIC_PWR);
-			_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
-			
-			range = 0;
-			disable_int(ALL_INTS);
-			usec = ultrasonic.timing(50000);
-			range = ultrasonic.convert(usec, ultrasonic.CM);
-			
-			if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+			if(((1 << VBATT_OK) & VBATT_OK_PORT))
 			{
-				if(((1 << VBATT_OK) & VBATT_OK_PORT))
-					LED1_PORT |= (1 << LED_CNTL1);
-				else
-					LED2_PORT |= (1 << LED_CNTL2);	//use red LED if low battery
-
-				//turn off the power to sonar only
-				shut_down_uss_leds(false);
+				//enable power to sonar
+				SONIC_PWR_PORT |= (1 << SONIC_PWR);
+				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
 				
-				_delay_ms(LED_ON_TIME);	//TODO: some sort of sleep mode during this time?
+				range = 0;
+				disable_int(ALL_INTS);
+				usec = ultrasonic.timing(50000);
+				range = ultrasonic.convert(usec, ultrasonic.CM);
+				
+				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+				{
+					control_leds(true, true);	// amber LED on, normal use
+
+					//turn off the power to sonar only
+					shut_down_uss_leds(false);
 					
+					_delay_ms(LED_ON_TIME);	//TODO: some sort of sleep mode during this time?
+				}
+
 				enable_int(ALL_INTS);
 			}
 			else
 			{
-				enable_int(ALL_INTS);
+				control_leds(true, false);	// if low battery, leave red light on
 			}
 			
-			shut_down_uss_leds(true);
+			shut_down_uss_leds(((1 << VBATT_OK) & VBATT_OK_PORT));	// if low battery, leave red light on
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
@@ -276,12 +278,13 @@ void toggle_led(uint8_t num_blinks, uint8_t milliseconds)
 	
 	for(int i = 0; i< num_blinks; i++)
 	{
-		LED2_PORT |= (1 << LED_CNTL2);
+		control_leds(true, false);	//RED LED on at PWM defined brightness
 		if(milliseconds == FAST_TOGGLE)
 			_delay_ms(150);
 		else
 			_delay_ms(500);
-		LED2_PORT &= ~(1 << LED_CNTL2);
+			
+		control_leds(false, false);	//RED LED off
 		if(milliseconds == FAST_TOGGLE)
 			_delay_ms(150);
 		else
@@ -343,11 +346,68 @@ void shut_down_uss_leds(bool leds)
 	if(leds)
 	{
 		//turn off the LED and led power
-		LED1_PORT &= ~(1 << LED_CNTL1);
-		LED2_PORT &= ~(1 << LED_CNTL2);
+		control_leds(false, true);
 	}
 	//disable USS
 	SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
+}
+
+//#START_FUNCTION_HEADER//////////////////////////////////////////////////////
+//#
+//# Description: 	Turns on or off the LED's using the specified PWM brightness
+//#
+//# Parameters:		on => true = LED on, false = LED off
+//#					amber => true = amber LED, false = red LED
+//#
+//# Returns: 		Nothing
+//#
+//#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
+void control_leds(bool on, bool amber)
+{
+	// make sure LED_CNTLx are outputs
+	LED1_DDR |= (1 << LED_CNTL1);	// Output on LED_CNTL1
+	LED2_DDR |= (1 << LED_CNTL2);	// Output on LED_CNTL2
+	
+	if(amber)
+	{	
+		// always shut down the RED LED
+		TCCR1A = 0; // normal mode
+		TCCR1B = 0;	// turn off PWM
+		LED2_PORT &= ~(1 << LED_CNTL2);	// turn off the pin
+		
+		if(on)
+		{
+			TCCR0A = (1 << COM0A1) | (1 << WGM00);	// phase correct PWM mode
+			OCR0B = PWM_PULSE_WIDTH;				// PWM pulse width
+			TCCR0B = (1 << CS01);					// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
+		}
+		else
+		{
+			TCCR0A = 0; // normal mode
+			TCCR0B = 0;	// turn off PWM
+			LED1_PORT &= ~(1 << LED_CNTL1);	// turn off the pin
+		}
+	}
+	else
+	{
+		// always shut down the AMBER LED
+		TCCR0A = 0; // normal mode
+		TCCR0B = 0;	// turn off PWM
+		LED1_PORT &= ~(1 << LED_CNTL1);	// turn off the pin
+		
+		if(on)
+		{
+			TCCR1A = (1 << COM1A1) | (1 << WGM10);		// phase correct PWM mode
+			OCR1B = PWM_PULSE_WIDTH;					// PWM pulse width on OC1B
+			TCCR1B = (1 << CS11);						// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
+		}
+		else
+		{
+			TCCR1A = 0; // normal mode
+			TCCR1B = 0;	// turn off PWM
+			LED2_PORT &= ~(1 << LED_CNTL2);	// turn off the pin
+		}
+	}
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
