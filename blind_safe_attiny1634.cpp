@@ -387,7 +387,7 @@ void control_leds(bool on, bool amber, uint8_t brightness)
 		if(on)
 		{
 			TCCR0A = (1 << COM0B1) | (1 << WGM00);	// phase correct PWM mode
-			OCR0B = brightness;						// PWM pulse width
+			OCR0B = brightness;						// PWM pulse width on OC0B
 			TCCR0B = (1 << CS01);					// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
 		}
 		else
@@ -407,7 +407,7 @@ void control_leds(bool on, bool amber, uint8_t brightness)
 		if(on)
 		{
 			TCCR1A = (1 << COM1A1) | (1 << WGM10);		// phase correct PWM mode
-			OCR1A = brightness;							// PWM pulse width on OC1B
+			OCR1A = brightness;							// PWM pulse width on OC1A
 			TCCR1B = (1 << CS11);						// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
 		}
 		else
