@@ -63,7 +63,7 @@
 #define MIN_SONAR_DISTANCE		200
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	50
-#define SONAR_SAMPLE_RATE_mS	20
+#define SONAR_SAMPLE_RATE_mS	100
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
 
 #define FAST_TOGGLE				1
@@ -146,13 +146,47 @@ int main(void)
 {
 	setup();
 	
-    while(1)
-    {
+	while(1)
+	{
+		//BATTERY IS LOW
+		if(!((1 << VBATT_OK) & VBATT_OK_PORT))
+		{
+			control_leds(true, false, PWM_PULSE_WIDTH);	// if low battery, leave red light on
+			shut_down_uss_leds(false);	// if low battery, leave red light on but turn off USS
+			while(!((1 << VBATT_OK) & VBATT_OK_PORT)){_delay_ms(1000);}
+		}
+		
 		//ACCELEROMETER DATA IS READY
 		if (got_data_acc && accel_on)
 		{
 			got_data_acc = false;
 			accel.readAccelData(accelCount);  // Read the x/y/z adc values, clears int
+
+			range = 0;
+			disable_int(ALL_INTS);
+			
+			while(1)
+			{
+				//enable power to sonar
+				SONIC_PWR_PORT |= (1 << SONIC_PWR);
+				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
+			
+				usec = ultrasonic.timing(50000);
+				range = ultrasonic.convert(usec, ultrasonic.CM);
+				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+				{
+					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
+				}
+				else
+				{
+					break;
+				}
+
+				//turn off the power to sonar only
+				shut_down_uss_leds(false);
+				
+				_delay_ms(SONAR_SAMPLE_RATE_mS);
+			}
 			
 			//sequentially check for motion detection
 			if((INT1_PIN & (1 << INT1_ACC)))
@@ -170,52 +204,18 @@ int main(void)
 			
 			go_to_sleep = true;
 			
-			if(((1 << VBATT_OK) & VBATT_OK_PORT))
-			{
-				//enable power to sonar
-				SONIC_PWR_PORT |= (1 << SONIC_PWR);
-				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
-				
-				range = 0;
-				disable_int(ALL_INTS);
-				
-				while(1)
-				{
-					usec = ultrasonic.timing(50000);
-					range = ultrasonic.convert(usec, ultrasonic.CM);
-					if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
-					{
-						control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
-					}
-					else
-					{
-						break;
-					}
-
-					//turn off the power to sonar only
-					shut_down_uss_leds(false);
-					
-					_delay_ms(SONAR_SAMPLE_RATE_mS);
-				}
-
-				enable_int(ALL_INTS);
-				shut_down_uss_leds(true);	// if low battery, leave red light on
-			}
-			else
-			{
-				control_leds(true, false, PWM_PULSE_WIDTH);	// if low battery, leave red light on
-				shut_down_uss_leds(false);	// if low battery, leave red light on
-			}
+			enable_int(ALL_INTS);
+			shut_down_uss_leds(true);
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
 		if(got_slp_wake)
 		{
+			got_slp_wake = false;
 			// always indicate to the driver that we are alive when starting movement
 			if(!driving)
-				toggle_led(WORKING_TOGGLES, FAST_TOGGLE);	
-				
-			got_slp_wake = false;
+				toggle_led(WORKING_TOGGLES, FAST_TOGGLE);
+			
 			driving = check_moving();
 			go_to_sleep = true;		//go into driving state mode
 		}
@@ -251,8 +251,8 @@ void setup()
 	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
 	got_slp_wake = false;
 	got_data_acc = false;
-	go_to_sleep = false;
-	driving = false;	
+	go_to_sleep = false;	
+	driving = false;
 	
 	ADCSRA = 0;	//disable ADC
 	
