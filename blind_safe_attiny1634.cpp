@@ -103,7 +103,7 @@
 //PROTOTYPES
 /************************************************************************/
 void toggle_led(uint8_t num_blinks, uint8_t milliseconds);
-void control_leds(bool on, bool amber);
+void control_leds(bool on, bool amber, uint8_t brightness);
 void shut_down_uss_leds(bool ce_led);
 void init_accelerometer(void);
 void initialize_pins(void);
@@ -185,7 +185,7 @@ int main(void)
 					range = ultrasonic.convert(usec, ultrasonic.CM);
 					if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 					{
-						control_leds(true, true);	// amber LED on, normal use
+						control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
 					}
 					else
 					{
@@ -203,7 +203,7 @@ int main(void)
 			}
 			else
 			{
-				control_leds(true, false);	// if low battery, leave red light on
+				control_leds(true, false, PWM_PULSE_WIDTH);	// if low battery, leave red light on
 				shut_down_uss_leds(false);	// if low battery, leave red light on
 			}
 		}
@@ -287,13 +287,13 @@ void toggle_led(uint8_t num_blinks, uint8_t milliseconds)
 	
 	for(int i = 0; i< num_blinks; i++)
 	{
-		control_leds(true, false);	//RED LED on at PWM defined brightness
+		control_leds(true, false, PWM_PULSE_WIDTH);	//RED LED on at PWM defined brightness
 		if(milliseconds == FAST_TOGGLE)
 			_delay_ms(150);
 		else
 			_delay_ms(500);
 			
-		control_leds(false, false);	//RED LED off
+		control_leds(false, false, 0);	//RED LED off
 		if(milliseconds == FAST_TOGGLE)
 			_delay_ms(150);
 		else
@@ -355,7 +355,7 @@ void shut_down_uss_leds(bool leds)
 	if(leds)
 	{
 		//turn off the LED and led power
-		control_leds(false, true);
+		control_leds(false, true, 0);
 	}
 	//disable USS
 	SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
@@ -371,7 +371,7 @@ void shut_down_uss_leds(bool leds)
 //# Returns: 		Nothing
 //#
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
-void control_leds(bool on, bool amber)
+void control_leds(bool on, bool amber, uint8_t brightness)
 {
 	// make sure LED_CNTLx are outputs
 	LED1_DDR |= (1 << LED_CNTL1);	// Output on LED_CNTL1
@@ -386,8 +386,8 @@ void control_leds(bool on, bool amber)
 		
 		if(on)
 		{
-			TCCR0A = (1 << COM0A1) | (1 << WGM00);	// phase correct PWM mode
-			OCR0B = PWM_PULSE_WIDTH;				// PWM pulse width
+			TCCR0A = (1 << COM0B1) | (1 << WGM00);	// phase correct PWM mode
+			OCR0B = brightness;						// PWM pulse width
 			TCCR0B = (1 << CS01);					// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
 		}
 		else
@@ -407,7 +407,7 @@ void control_leds(bool on, bool amber)
 		if(on)
 		{
 			TCCR1A = (1 << COM1A1) | (1 << WGM10);		// phase correct PWM mode
-			OCR1B = PWM_PULSE_WIDTH;					// PWM pulse width on OC1B
+			OCR1A = brightness;							// PWM pulse width on OC1B
 			TCCR1B = (1 << CS11);						// clock source = CS1[2:0] { 0 = off | 1 => /8 | 2 => /64 | 3 => /256 | 4 => /1024}, start PWM
 		}
 		else
