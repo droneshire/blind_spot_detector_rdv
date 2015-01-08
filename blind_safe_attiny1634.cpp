@@ -39,7 +39,7 @@
 //PIN/PORT DEFINITIONS:
 /************************************************************************/
 #define TRIGGER			PORTA0	//OUTPUT
-#define CE_REG			PORTA3	//OUTPUT 5V FROM STEP UP CONVERTER 
+#define CE_REG			PORTA3	//OUTPUT OE 5V FROM STEP UP CONVERTER
 #define INT2_ACC		PORTA4	//INPUT INTERRUPT DATA READY (PCIE1)
 #define LED_CNTL1		PORTA5	//OUTPUT PWM AMBER LED
 #define SPARE			PORTA6	//OUTPUT SPARE PIN
@@ -89,7 +89,7 @@
 /************************************************************************/
 #define ACCEL_ADDR				0x1C	// I2C address for first accelerometer
 #define SCALE					0x08	// Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
-#define DATARATE				0x05	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
+#define DATARATE				0x07	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
 #define SLEEPRATE				0x03	// 0=50Hz, 1=12.5, 2=6.25, 3=1.56
 #define ASLP_TIMEOUT 			600		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
 #define MOTION_THRESHOLD		16		// 0.063g/LSB for MT interrupt (16 is minimum to overcome gravity effects)
@@ -148,13 +148,14 @@ int main(void)
 	
 	while(1)
 	{
+		/*
 		//BATTERY IS LOW
 		if(!((1 << VBATT_OK) & VBATT_OK_PORT))
 		{
 			control_leds(true, false, PWM_PULSE_WIDTH);	// if low battery, leave red light on
 			shut_down_uss_leds(false);	// if low battery, leave red light on but turn off USS
 			while(!((1 << VBATT_OK) & VBATT_OK_PORT)){_delay_ms(1000);}
-		}
+		}*/
 		
 		//ACCELEROMETER DATA IS READY
 		if (got_data_acc && accel_on)
@@ -168,9 +169,9 @@ int main(void)
 			while(1)
 			{
 				//enable power to sonar
-				SONIC_PWR_PORT |= (1 << SONIC_PWR);
+				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
-			
+				
 				usec = ultrasonic.timing(50000);
 				range = ultrasonic.convert(usec, ultrasonic.CM);
 				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
@@ -179,6 +180,7 @@ int main(void)
 				}
 				else
 				{
+					shut_down_uss_leds(true);
 					break;
 				}
 
@@ -194,6 +196,8 @@ int main(void)
 				driving = check_moving();	//we will go through one more time before, maybe break out here?
 				if(!driving)
 				{
+					CE_REG_PORT &= ~(1 << CE_REG);
+					_delay_us(SONIC_BRINGUP_TIME_uS);
 					shut_down_uss_leds(true);
 				}
 			}
@@ -212,9 +216,14 @@ int main(void)
 		if(got_slp_wake)
 		{
 			got_slp_wake = false;
+			
 			// always indicate to the driver that we are alive when starting movement
 			if(!driving)
+			{
 				toggle_led(WORKING_TOGGLES, FAST_TOGGLE);
+				CE_REG_PORT |= (1 << CE_REG);
+				_delay_us(SONIC_BRINGUP_TIME_uS);
+			}
 			
 			driving = check_moving();
 			go_to_sleep = true;		//go into driving state mode
@@ -226,7 +235,7 @@ int main(void)
 			shut_down_uss_leds(true);
 			deep_sleep_handler(driving);
 		}
-    }
+	}
 }
 
 
@@ -242,6 +251,7 @@ int main(void)
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
 void setup()
 {
+	uint8_t i;
 	
 	//initialize the pins
 	initialize_pins();
@@ -269,6 +279,16 @@ void setup()
 	init_accelerometer();
 	_delay_ms(1500);
 	toggle_led(2, SLOW_TOGGLE);
+	
+	// enable the 5V output
+	CE_REG_PORT |= (1 << CE_REG);
+	
+	i = 0;
+	while(i < PWM_PULSE_WIDTH)
+	{
+		control_leds(true, true, i++);
+		_delay_ms(10);
+	}
 }
 
 
@@ -358,7 +378,7 @@ void shut_down_uss_leds(bool leds)
 		control_leds(false, true, 0);
 	}
 	//disable USS
-	SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
+	SONIC_PWR_PORT |= (1 << SONIC_PWR);
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -480,6 +500,7 @@ void deep_sleep_handler(bool driving)
 {
 	got_slp_wake = false;
 	got_data_acc = false;
+	shut_down_uss_leds(true);
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 	sleep_enable();
 	cli();
