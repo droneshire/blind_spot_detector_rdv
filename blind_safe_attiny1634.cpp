@@ -170,6 +170,10 @@ int main(void)
 			
 			while(1)
 			{				
+				PUEA = 0;
+				PUEB = 0;
+				DDRA |= (1 << TRIGGER);
+				DDRB &= ~(1 << ECHO_3V3);
 				SONIC_PWR_PORT |= (1 << SONIC_PWR);
 				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
 				
@@ -188,11 +192,19 @@ int main(void)
 				else
 				{
 					control_leds(false, false, 0);
+					PUEA = 0;
+					PUEB = 0;
+					DDRA &= ~(1 << TRIGGER);
+					DDRB &= ~(1 << ECHO_3V3);
 					SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 					break;
 				}
 
 				//turn off the power to sonar only
+				PUEA = 0;
+				PUEB = 0;
+				DDRA &= ~(1 << TRIGGER);
+				DDRB &= ~(1 << ECHO_3V3);
 				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 				_delay_ms(SONAR_SAMPLE_RATE_mS);
 			}
@@ -295,6 +307,8 @@ void setup()
 		control_leds(true, true, i++);
 		_delay_ms(10);
 	}
+	
+	control_leds(false, false, 0);
 }
 
 
