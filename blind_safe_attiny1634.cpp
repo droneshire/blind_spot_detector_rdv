@@ -55,6 +55,7 @@
 #define VBATT_OK_PORT	PORTC
 #define SONIC_PWR_PORT	PORTA
 
+#define VBATT_OK_PIN	PINC
 #define LED1_DDR		DDRA
 #define LED2_DDR		DDRB
 #define CE_REG_DDR		DDRA
@@ -62,8 +63,8 @@
 #define MAX_SONAR_DISTANCE		500
 #define MIN_SONAR_DISTANCE		200
 #define LED_ON_TIME				500
-#define SONIC_BRINGUP_TIME_uS	50
-#define SONAR_SAMPLE_RATE_mS	100
+#define SONIC_BRINGUP_TIME_uS	100
+#define SONAR_SAMPLE_RATE_mS	300
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
 
 #define FAST_TOGGLE				1
@@ -148,14 +149,15 @@ int main(void)
 	
 	while(1)
 	{
-		/*
 		//BATTERY IS LOW
-		if(!((1 << VBATT_OK) & VBATT_OK_PORT))
+		while(!((1 << VBATT_OK) & VBATT_OK_PIN))
 		{
-			control_leds(true, false, PWM_PULSE_WIDTH);	// if low battery, leave red light on
-			shut_down_uss_leds(false);	// if low battery, leave red light on but turn off USS
-			while(!((1 << VBATT_OK) & VBATT_OK_PORT)){_delay_ms(1000);}
-		}*/
+			shut_down_uss_leds(false);
+			control_leds(true, false, PWM_PULSE_WIDTH);
+			_delay_ms(8);
+			control_leds(false, false, 0);
+			_delay_ms(8);
+		}
 		
 		//ACCELEROMETER DATA IS READY
 		if (got_data_acc && accel_on)
@@ -167,26 +169,31 @@ int main(void)
 			disable_int(ALL_INTS);
 			
 			while(1)
-			{
-				//enable power to sonar
-				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
+			{				
+				SONIC_PWR_PORT |= (1 << SONIC_PWR);
 				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
 				
-				usec = ultrasonic.timing(50000);
-				range = ultrasonic.convert(usec, ultrasonic.CM);
+				//continue to try to read until powered up
+				range = 0;
+				while(range == 0)
+				{
+					usec = ultrasonic.timing(50000);
+					range = ultrasonic.convert(usec, ultrasonic.CM);	
+				}
+				
 				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 				{
 					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
 				}
 				else
 				{
-					shut_down_uss_leds(true);
+					control_leds(false, false, 0);
+					SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 					break;
 				}
 
 				//turn off the power to sonar only
-				shut_down_uss_leds(false);
-				
+				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 				_delay_ms(SONAR_SAMPLE_RATE_mS);
 			}
 			
@@ -198,7 +205,7 @@ int main(void)
 				{
 					CE_REG_PORT &= ~(1 << CE_REG);
 					_delay_us(SONIC_BRINGUP_TIME_uS);
-					shut_down_uss_leds(true);
+					control_leds(false, false, 0);
 				}
 			}
 			else
@@ -209,7 +216,7 @@ int main(void)
 			go_to_sleep = true;
 			
 			enable_int(ALL_INTS);
-			shut_down_uss_leds(true);
+			control_leds(false, false, 0);
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
@@ -232,7 +239,6 @@ int main(void)
 		//UNIT NEEDS TO GO TO DEEP SLEEP
 		if(go_to_sleep)
 		{
-			shut_down_uss_leds(true);
 			deep_sleep_handler(driving);
 		}
 	}
@@ -256,7 +262,7 @@ void setup()
 	//initialize the pins
 	initialize_pins();
 	_delay_ms(1500);
-	shut_down_uss_leds(true);
+	control_leds(false, false, 0);
 	
 	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
 	got_slp_wake = false;
@@ -362,10 +368,10 @@ bool check_moving()
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
 //#
-//# Description: 	This powers down the ultrasonic and led power and turns off
-//#					the battery reading voltage divider
+//# Description: 	This powers down/up the ultrasonic and led power 
 //#
-//# Parameters:		None
+//# Parameters:		leds = true ? turn off LED's : leave LED's
+//#					uss = true ? turn off USS power and high Z data : turn on USS power and configure I/O
 //#
 //# Returns: 		Nothing
 //#
@@ -375,10 +381,11 @@ void shut_down_uss_leds(bool leds)
 	if(leds)
 	{
 		//turn off the LED and led power
-		control_leds(false, true, 0);
+		control_leds(false, false, 0);
 	}
 	//disable USS
-	SONIC_PWR_PORT |= (1 << SONIC_PWR);
+	//SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
+
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -500,7 +507,7 @@ void deep_sleep_handler(bool driving)
 {
 	got_slp_wake = false;
 	got_data_acc = false;
-	shut_down_uss_leds(true);
+	control_leds(false, false, 0);
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 	sleep_enable();
 	cli();
@@ -656,6 +663,7 @@ ISR(PCINT0_vect)
 	if((INT2_PIN & (1 << INT2_ACC)))
 	{
 		got_data_acc = true;
+		SONIC_PWR_PORT |= (1 << SONIC_PWR);
 		disable_int(INT1_PCIE);	//disable motion interrupt and sequential check instead
 	}
 	sei();
