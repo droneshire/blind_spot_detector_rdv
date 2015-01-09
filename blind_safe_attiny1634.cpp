@@ -105,7 +105,6 @@
 /************************************************************************/
 void toggle_led(uint8_t num_blinks, uint8_t milliseconds);
 void control_leds(bool on, bool amber, uint8_t brightness);
-void shut_down_uss_leds(bool ce_led);
 void init_accelerometer(void);
 void initialize_pins(void);
 bool check_moving(void);
@@ -150,33 +149,59 @@ int main(void)
 	while(1)
 	{
 		//BATTERY IS LOW
-		while(!((1 << VBATT_OK) & VBATT_OK_PIN))
+		if(!((1 << VBATT_OK) & VBATT_OK_PIN))
 		{
-			shut_down_uss_leds(false);
-			control_leds(true, false, PWM_PULSE_WIDTH);
-			_delay_ms(8);
-			control_leds(false, false, 0);
-			_delay_ms(8);
+			//sometimes VSTOR may dip slightly below 3.8
+			//when the LED has been on for a longer period of 
+			//time.  Let it charge up again by waiting and 
+			//checking again before turning on the red led
+			_delay_ms(50);
+			if(((1 << VBATT_OK) & VBATT_OK_PIN))
+				break;
+			while(!((1 << VBATT_OK) & VBATT_OK_PIN))	
+			{
+				control_leds(true, false, PWM_PULSE_WIDTH);
+				_delay_ms(8);
+				control_leds(false, false, 0);
+				_delay_ms(8);
+			}
 		}
 		
 		//ACCELEROMETER DATA IS READY
 		if (got_data_acc && accel_on)
 		{
+			driving = true;
 			got_data_acc = false;
 			accel.readAccelData(accelCount);  // Read the x/y/z adc values, clears int
 
 			range = 0;
 			disable_int(ALL_INTS);
 			
-			while(1)
+			while(driving)
 			{				
 				PUEA = 0;
 				PUEB = 0;
 				DDRA |= (1 << TRIGGER);
 				DDRB &= ~(1 << ECHO_3V3);
 				SONIC_PWR_PORT |= (1 << SONIC_PWR);
-				_delay_us(SONIC_BRINGUP_TIME_uS);	//TODO: may need to adjust delay here to optimize bringup time
+				_delay_us(SONIC_BRINGUP_TIME_uS);
 				
+				//sequentially check for motion detection
+				if((INT1_PIN & (1 << INT1_ACC)))
+				{
+					driving = check_moving();
+					if(!driving)
+					{
+						CE_REG_PORT &= ~(1 << CE_REG);
+						_delay_us(SONIC_BRINGUP_TIME_uS);
+						control_leds(false, false, 0);
+					}
+				}
+				else
+				{
+					driving = true;
+				}
+					
 				//continue to try to read until powered up
 				range = 0;
 				while(range == 0)
@@ -188,6 +213,7 @@ int main(void)
 				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 				{
 					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
+					
 				}
 				else
 				{
@@ -199,7 +225,7 @@ int main(void)
 					SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 					break;
 				}
-
+				
 				//turn off the power to sonar only
 				PUEA = 0;
 				PUEB = 0;
@@ -207,22 +233,6 @@ int main(void)
 				DDRB &= ~(1 << ECHO_3V3);
 				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
 				_delay_ms(SONAR_SAMPLE_RATE_mS);
-			}
-			
-			//sequentially check for motion detection
-			if((INT1_PIN & (1 << INT1_ACC)))
-			{
-				driving = check_moving();	//we will go through one more time before, maybe break out here?
-				if(!driving)
-				{
-					CE_REG_PORT &= ~(1 << CE_REG);
-					_delay_us(SONIC_BRINGUP_TIME_uS);
-					control_leds(false, false, 0);
-				}
-			}
-			else
-			{
-				driving = true;
 			}
 			
 			go_to_sleep = true;
@@ -269,7 +279,7 @@ int main(void)
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
 void setup()
 {
-	uint8_t i;
+	uint16_t i;
 	
 	//initialize the pins
 	initialize_pins();
@@ -378,28 +388,6 @@ bool check_moving()
 	clear_acc_ints();			//clear interrupts at the end of this handler
 
 	return (still ? false : true);
-}
-
-//#START_FUNCTION_HEADER//////////////////////////////////////////////////////
-//#
-//# Description: 	This powers down/up the ultrasonic and led power 
-//#
-//# Parameters:		leds = true ? turn off LED's : leave LED's
-//#					uss = true ? turn off USS power and high Z data : turn on USS power and configure I/O
-//#
-//# Returns: 		Nothing
-//#
-//#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
-void shut_down_uss_leds(bool leds)
-{
-	if(leds)
-	{
-		//turn off the LED and led power
-		control_leds(false, false, 0);
-	}
-	//disable USS
-	//SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
-
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
