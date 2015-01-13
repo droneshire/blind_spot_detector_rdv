@@ -9,17 +9,17 @@
 //#
 //# Description:	This program is the main program for the blind spot detector
 //#
-//#								I/O's
-//#				        	  __________
-//#				INT_ACC1-----|			|-----SDA
-//#				INT_ACC2-----|	 MCU	|-----SCL
-//#				 TRIGGER-----|			|-----LED_CTRL1
-//#					ECHO-----|			|-----LED_CTRL2
-//#					 CE_REG--|			|-----MISO
-//#					SPARE----|			|-----MOSI
-//#					RESET----|			|-----SCK
-//#					SONIC----|			|-----VBATT_OK
-//#					         |__________|
+//#							I/O's
+//#				          __________
+//#				INT_ACC1-|          |-----SDA
+//#				INT_ACC2-|   MCU    |-----SCL
+//#				TRIGGER--|          |-----LED_CTRL1
+//#				ECHO-----|          |-----LED_CTRL2
+//#				CE_REG---|          |-----MISO
+//#				SPARE----|          |-----MOSI
+//#				RESET----|          |-----SCK
+//#				SONIC----|          |-----VBATT_OK
+//#					     |__________|
 //#
 //#
 //# Authors:     	Ross Yeager
@@ -40,13 +40,13 @@
 /************************************************************************/
 #define TRIGGER			PORTA0	//OUTPUT
 #define CE_REG			PORTA3	//OUTPUT OE 5V FROM STEP UP CONVERTER
-#define INT2_ACC		PORTA4	//INPUT INTERRUPT DATA READY (PCIE1)
+#define INT2_ACC		PORTA4	//INPUT INTERRUPT DATA READY (PCIE0/PCINT4)
 #define LED_CNTL1		PORTA5	//OUTPUT PWM AMBER LED
 #define SPARE			PORTA6	//OUTPUT SPARE PIN
 #define SONIC_PWR		PORTA7	//OUTPUT TO POWER USS
 #define ECHO_3V3		PORTB0	//INPUT FROM USS
 #define LED_CNTL2		PORTB3	//OUTPUT PWM RED LED
-#define INT1_ACC		PORTC0	//INPUT INTERRUPT MOTION DETECTION (PCIE0)
+#define INT1_ACC		PORTC0	//INPUT INTERRUPT MOTION DETECTION (PCIE2/PCINT12)
 #define VBATT_OK		PORTC2	//INPUT BATTERY GOOD INDICATOR
 
 #define LED1_PORT		PORTA
@@ -61,11 +61,13 @@
 #define CE_REG_DDR		DDRA
 
 #define MAX_SONAR_DISTANCE		500
-#define MIN_SONAR_DISTANCE		200
+#define MIN_SONAR_DISTANCE		1//200
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	100
-#define SONAR_SAMPLE_RATE_mS	300
+#define SONAR_SAMPLE_RATE_mS	200
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
+#define USS_TIMEOUT				45000
+#define USS_MAX_TIMEOUTS		1
 
 #define FAST_TOGGLE				1
 #define SLOW_TOGGLE				2
@@ -92,7 +94,7 @@
 #define SCALE					0x08	// Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
 #define DATARATE				0x07	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
 #define SLEEPRATE				0x03	// 0=50Hz, 1=12.5, 2=6.25, 3=1.56
-#define ASLP_TIMEOUT 			600		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
+#define ASLP_TIMEOUT 			100		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
 #define MOTION_THRESHOLD		16		// 0.063g/LSB for MT interrupt (16 is minimum to overcome gravity effects)
 #define MOTION_DEBOUNCE_COUNT 	1		// IN LP MODE, TIME STEP IS 160ms/COUNT
 #define I2C_RATE				100
@@ -124,8 +126,8 @@ static volatile bool go_to_sleep;
 static volatile bool driving;
 static volatile uint8_t intSource;
 
-static bool accel_on;
 static unsigned long usec;
+static unsigned char timeout;
 static float range;
 
 static int16_t accelCount[3];  				// Stores the 12-bit signed value
@@ -152,13 +154,13 @@ int main(void)
 		if(!((1 << VBATT_OK) & VBATT_OK_PIN))
 		{
 			//sometimes VSTOR may dip slightly below 3.8
-			//when the LED has been on for a longer period of 
-			//time.  Let it charge up again by waiting and 
+			//when the LED has been on for a longer period of
+			//time.  Let it charge up again by waiting and
 			//checking again before turning on the red led
 			_delay_ms(50);
 			if(((1 << VBATT_OK) & VBATT_OK_PIN))
 				break;
-			while(!((1 << VBATT_OK) & VBATT_OK_PIN))	
+			while(!((1 << VBATT_OK) & VBATT_OK_PIN))
 			{
 				control_leds(true, false, PWM_PULSE_WIDTH);
 				_delay_ms(8);
@@ -168,17 +170,21 @@ int main(void)
 		}
 		
 		//ACCELEROMETER DATA IS READY
-		if (got_data_acc && accel_on)
+		if (got_data_acc)
 		{
-			driving = true;
 			got_data_acc = false;
+			go_to_sleep = true;
+			
 			accel.readAccelData(accelCount);  // Read the x/y/z adc values, clears int
-
+			
 			range = 0;
 			disable_int(ALL_INTS);
+			driving = true;
 			
 			while(driving)
-			{				
+			{
+				// set the ECHO/TRIGGER pins to their correct I/O
+				// and enable the sensor
 				PUEA = 0;
 				PUEB = 0;
 				DDRA |= (1 << TRIGGER);
@@ -201,41 +207,33 @@ int main(void)
 				{
 					driving = true;
 				}
-					
-				//continue to try to read until powered up
-				range = 0;
-				while(range == 0)
+				
+				timeout = 0;
+				// this is to allow for enough time for the USS to power up
+				while(timeout++ < USS_MAX_TIMEOUTS && range == 0)
 				{
-					usec = ultrasonic.timing(50000);
-					range = ultrasonic.convert(usec, ultrasonic.CM);	
+					range = 0;
+					usec = ultrasonic.timing(USS_TIMEOUT);
+					range = ultrasonic.convert(usec, ultrasonic.CM);
 				}
 				
-				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
-				{
-					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
-					
-				}
-				else
-				{
-					control_leds(false, false, 0);
-					PUEA = 0;
-					PUEB = 0;
-					DDRA &= ~(1 << TRIGGER);
-					DDRB &= ~(1 << ECHO_3V3);
-					SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
-					break;
-				}
-				
-				//turn off the power to sonar only
+				//turn off the power to sonar only, tristate the data lines
 				PUEA = 0;
 				PUEB = 0;
 				DDRA &= ~(1 << TRIGGER);
 				DDRB &= ~(1 << ECHO_3V3);
 				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
-				_delay_ms(SONAR_SAMPLE_RATE_mS);
+				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
+				{
+					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
+					_delay_ms(SONAR_SAMPLE_RATE_mS);
+				}
+				else
+				{
+					control_leds(false, false, 0);
+					break;
+				}
 			}
-			
-			go_to_sleep = true;
 			
 			enable_int(ALL_INTS);
 			control_leds(false, false, 0);
@@ -250,8 +248,6 @@ int main(void)
 			if(!driving)
 			{
 				toggle_led(WORKING_TOGGLES, FAST_TOGGLE);
-				CE_REG_PORT |= (1 << CE_REG);
-				_delay_us(SONIC_BRINGUP_TIME_uS);
 			}
 			
 			driving = check_moving();
@@ -270,7 +266,7 @@ int main(void)
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
 //#
 //# Description: 	Initialization function.  Configures IO pins, enables interrupts.
-//#					Heartbeat checks the accelerometerS.
+//#					Heartbeat checks the accelerometer.
 //#
 //# Parameters:		None
 //#
@@ -287,25 +283,20 @@ void setup()
 	control_leds(false, false, 0);
 	
 	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
+	
 	got_slp_wake = false;
 	got_data_acc = false;
-	go_to_sleep = false;	
+	go_to_sleep = false;
 	driving = false;
 	
 	ADCSRA = 0;	//disable ADC
 	
-	if (accel.readRegister(WHO_AM_I) == 0x2A) 	// WHO_AM_I should always be 0x2A
-	{
-		accel_on = true;
-	}
-	else
-	{
-		accel_on = false;
+	if (!(accel.readRegister(WHO_AM_I) == 0x2A)) 	// WHO_AM_I should always be 0x2A
 		while(1){toggle_led(1, FAST_TOGGLE);}	// if accelerometer is broken, just blink continually
-	}
 	
 	init_accelerometer();
-	_delay_ms(1500);
+	
+	_delay_ms(500);
 	toggle_led(2, SLOW_TOGGLE);
 	
 	// enable the 5V output
@@ -317,8 +308,12 @@ void setup()
 		control_leds(true, true, i++);
 		_delay_ms(10);
 	}
-	
+	//turn off the red LED
 	control_leds(false, false, 0);
+	clear_acc_ints();
+	_delay_ms(500);
+	enable_int(ALL_INTS);
+	
 }
 
 
@@ -339,15 +334,15 @@ void toggle_led(uint8_t num_blinks, uint8_t milliseconds)
 	{
 		control_leds(true, false, PWM_PULSE_WIDTH);	//RED LED on at PWM defined brightness
 		if(milliseconds == FAST_TOGGLE)
-			_delay_ms(150);
+		_delay_ms(150);
 		else
-			_delay_ms(500);
-			
+		_delay_ms(500);
+		
 		control_leds(false, false, 0);	//RED LED off
 		if(milliseconds == FAST_TOGGLE)
-			_delay_ms(150);
+		_delay_ms(150);
 		else
-			_delay_ms(500);
+		_delay_ms(500);
 	}
 	
 }
@@ -383,6 +378,7 @@ bool check_moving()
 		}
 		case 0x04:						//MOTION INTERRUPT
 		default:
+		still = false;
 		break;
 	}
 	clear_acc_ints();			//clear interrupts at the end of this handler
@@ -407,7 +403,7 @@ void control_leds(bool on, bool amber, uint8_t brightness)
 	LED2_DDR |= (1 << LED_CNTL2);	// Output on LED_CNTL2
 	
 	if(amber)
-	{	
+	{
 		// always shut down the RED LED
 		TCCR1A = 0; // normal mode
 		TCCR1B = 0;	// turn off PWM
@@ -476,13 +472,13 @@ void init_accelerometer(){
 void initialize_pins()
 {
 	//outputs
-	DDRA =  (1 << TRIGGER) | (1 << CE_REG) | (1 << LED_CNTL1) | (1 << SPARE) | (1 << SONIC_PWR);
+	DDRA =  (1 << TRIGGER) | (1 << CE_REG) | (1 << LED_CNTL1) | (1 << SONIC_PWR);
 	DDRB = (1 << LED_CNTL2);
-	PORTA = 0;	
+	PORTA = 0;
 	PORTB = 0;
 	
 	//inputs
-	DDRA &=  ~(1 << INT2_ACC);
+	DDRA &=  ~((1 << INT2_ACC)| (1 << SPARE));
 	DDRB &=  ~(1 << ECHO_3V3);
 	DDRC &=  ~((1 << INT1_ACC) | (1 << VBATT_OK));
 	
@@ -520,6 +516,8 @@ void deep_sleep_handler(bool driving)
 	}
 	else
 	{
+		CE_REG_PORT &= ~(1 << CE_REG);
+		_delay_us(SONIC_BRINGUP_TIME_uS);
 		enable_int(INT1_PCIE);
 		disable_int(INT2_PCIE);
 	}
@@ -529,6 +527,12 @@ void deep_sleep_handler(bool driving)
 	sleep_cpu();
 	sleep_disable();
 	go_to_sleep = false;
+	if(!driving)
+	{
+		CE_REG_PORT |= (1 << CE_REG);
+		_delay_us(SONIC_BRINGUP_TIME_uS);
+	}
+	
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -545,11 +549,11 @@ void deep_sleep_handler(bool driving)
 bool clear_acc_ints()
 {
 	if(accel.readRegister(INT_SOURCE) == ~0u)
-		return false;
+	return false;
 	if(accel.readRegister(FF_MT_SRC) == ~0u)
-		return false;
+	return false;
 	accel.readAccelData(accelCount);
-		return true;
+	return true;
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
