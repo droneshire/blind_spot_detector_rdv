@@ -57,7 +57,8 @@ long Ultrasonic::timing(unsigned long timeout)
 	// the initial loop; it takes 16 clock cycles per iteration.
 	unsigned long numloops = 0;
 	unsigned long maxloops = microsecondsToClockCycles(timeout) / 16;
-	DDRB &= ~(1 << PORTB0);
+	DDRB &= ~(1 << ECHO_BM);
+	DDRA |= (1 << TRIG_PIN);
 	
     TRIG_PORT &= ~(1 << TRIG_PIN); //digitalWrite(_trigPin, LOW);
     _delay_us(2);
