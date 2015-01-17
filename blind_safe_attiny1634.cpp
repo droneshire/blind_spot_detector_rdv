@@ -27,6 +27,7 @@
 //#END_MODULE_HEADER//////////////////////////////////////////////////////////
 #include <avr/sleep.h>
 #include <avr/interrupt.h>
+#include <avr/wdt.h>
 #include <util/delay.h>
 #include <avr/io.h>
 #include "Arduino.h"
@@ -60,18 +61,18 @@
 #define LED2_DDR		DDRB
 #define CE_REG_DDR		DDRA
 
-#define MAX_SONAR_DISTANCE		500
-#define MIN_SONAR_DISTANCE		250
+#define MAX_SONAR_DISTANCE		600
+#define MIN_SONAR_DISTANCE		10
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	100
 #define SONAR_SAMPLE_RATE_mS	200
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
-#define USS_TIMEOUT				45000
-#define USS_MAX_TIMEOUTS		1
+#define USS_TIMEOUT				60000
+#define USS_MAX_TIMEOUTS		2
 
 #define FAST_TOGGLE				1
 #define SLOW_TOGGLE				2
-#define WORKING_TOGGLES			10		//number of blinks for when coming out of no-motion sleep
+#define WORKING_TOGGLES			3		//number of blinks for when coming out of no-motion sleep
 
 #define INT1_PCINT		PCINT12
 #define INT2_PCINT		PCINT4
@@ -94,7 +95,7 @@
 #define SCALE					0x08	// Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
 #define DATARATE				0x07	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
 #define SLEEPRATE				0x03	// 0=50Hz, 1=12.5, 2=6.25, 3=1.56
-#define ASLP_TIMEOUT 			100		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
+#define ASLP_TIMEOUT 			30		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
 #define MOTION_THRESHOLD		16		// 0.063g/LSB for MT interrupt (16 is minimum to overcome gravity effects)
 #define MOTION_DEBOUNCE_COUNT 	1		// IN LP MODE, TIME STEP IS 160ms/COUNT
 #define I2C_RATE				100
@@ -127,7 +128,6 @@ static volatile bool driving;
 static volatile uint8_t intSource;
 
 static unsigned long usec;
-static unsigned char timeout;
 static float range;
 
 static int16_t accelCount[3];  				// Stores the 12-bit signed value
@@ -162,10 +162,11 @@ int main(void)
 				break;
 			while(!((1 << VBATT_OK) & VBATT_OK_PIN))
 			{
+				//flash at ~30Hz to save power yet appear on
 				control_leds(true, false, PWM_PULSE_WIDTH);
-				_delay_ms(8);
+				_delay_ms(13);
 				control_leds(false, false, 0);
-				_delay_ms(8);
+				_delay_ms(13);
 			}
 		}
 		
@@ -174,15 +175,11 @@ int main(void)
 		{
 			got_data_acc = false;
 			go_to_sleep = true;
-			
-			accel.readAccelData(accelCount);  // Read the x/y/z adc values, clears int
-			
-			range = 0;
-			disable_int(ALL_INTS);
 			driving = true;
 			
 			while(driving)
 			{
+				accel.readAccelData(accelCount);  // Read the x/y/z adc values, clears int
 				// set the ECHO/TRIGGER pins to their correct I/O
 				// and enable the sensor
 				PUEA = 0;
@@ -207,22 +204,16 @@ int main(void)
 				{
 					driving = true;
 				}
+
+				range = 0;
+				usec = ultrasonic.timing(USS_TIMEOUT);
+				range = ultrasonic.convert(usec, ultrasonic.CM);
 				
-				timeout = 0;
-				// this is to allow for enough time for the USS to power up
-				while(timeout++ < USS_MAX_TIMEOUTS && range == 0)
-				{
-					range = 0;
-					usec = ultrasonic.timing(USS_TIMEOUT);
-					range = ultrasonic.convert(usec, ultrasonic.CM);
-				}
-				
-				//turn off the power to sonar only, tristate the data lines
 				PUEA = 0;
 				PUEB = 0;
 				DDRA &= ~(1 << TRIGGER);
 				DDRB &= ~(1 << ECHO_3V3);
-				SONIC_PWR_PORT &= ~(1 << SONIC_PWR);
+				_delay_us(SONIC_BRINGUP_TIME_uS);
 				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 				{
 					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
@@ -235,8 +226,7 @@ int main(void)
 				}
 			}
 			
-			enable_int(ALL_INTS);
-			control_leds(false, false, 0);
+			clear_acc_ints();
 		}
 		
 		//ACCELEROMETER CHANGED INTO SLEEP/AWAKE STATE
@@ -275,12 +265,9 @@ int main(void)
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
 void setup()
 {
-	uint16_t i;
-	
 	//initialize the pins
 	initialize_pins();
-	_delay_ms(1500);
-	control_leds(false, false, 0);
+	toggle_led(WORKING_TOGGLES, FAST_TOGGLE);	
 	
 	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
 	
@@ -296,24 +283,14 @@ void setup()
 	
 	init_accelerometer();
 	
-	_delay_ms(500);
-	toggle_led(2, SLOW_TOGGLE);
-	
 	// enable the 5V output
 	CE_REG_PORT |= (1 << CE_REG);
 	
-	i = 0;
-	while(i < PWM_PULSE_WIDTH)
-	{
-		control_leds(true, true, i++);
-		_delay_ms(10);
-	}
 	//turn off the red LED
 	control_leds(false, false, 0);
 	clear_acc_ints();
 	_delay_ms(500);
 	enable_int(ALL_INTS);
-	
 }
 
 
@@ -549,11 +526,11 @@ void deep_sleep_handler(bool driving)
 bool clear_acc_ints()
 {
 	if(accel.readRegister(INT_SOURCE) == ~0u)
-	return false;
+		return false;
 	if(accel.readRegister(FF_MT_SRC) == ~0u)
-	return false;
+		return false;
 	accel.readAccelData(accelCount);
-	return true;
+		return true;
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
@@ -669,7 +646,6 @@ ISR(PCINT0_vect)
 	if((INT2_PIN & (1 << INT2_ACC)))
 	{
 		got_data_acc = true;
-		SONIC_PWR_PORT |= (1 << SONIC_PWR);
 		disable_int(INT1_PCIE);	//disable motion interrupt and sequential check instead
 	}
 	sei();
