@@ -62,10 +62,11 @@
 #define CE_REG_DDR		DDRA
 
 #define MAX_SONAR_DISTANCE		600
-#define MIN_SONAR_DISTANCE		10
+#define MIN_SONAR_DISTANCE		100
 #define LED_ON_TIME				500
 #define SONIC_BRINGUP_TIME_uS	100
 #define SONAR_SAMPLE_RATE_mS	200
+#define VISIBLE_FREQUENCY_mS	13
 #define PWM_PULSE_WIDTH			0xFF	//0-FF defines PWM duty cycle
 #define USS_TIMEOUT				60000
 #define USS_MAX_TIMEOUTS		2
@@ -95,7 +96,7 @@
 #define SCALE					0x08	// Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
 #define DATARATE				0x06	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
 #define SLEEPRATE				0x03	// 0=50Hz, 1=12.5, 2=6.25, 3=1.56
-#define ASLP_TIMEOUT 			30		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
+#define ASLP_TIMEOUT 			0x1E	// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
 #define MOTION_THRESHOLD		16		// 0.063g/LSB for MT interrupt (16 is minimum to overcome gravity effects)
 #define MOTION_DEBOUNCE_COUNT 	1		// IN LP MODE, TIME STEP IS 160ms/COUNT
 #define I2C_RATE				100
@@ -106,6 +107,7 @@
 /************************************************************************/
 //PROTOTYPES
 /************************************************************************/
+void watch_dog_switch(bool on);
 void toggle_led(uint8_t num_blinks, uint8_t milliseconds);
 void control_leds(bool on, bool amber, uint8_t brightness);
 void init_accelerometer(void);
@@ -146,6 +148,8 @@ Ultrasonic ultrasonic;
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
 int main(void)
 {
+	uint8_t i;
+	
 	setup();
 	
 	while(1)
@@ -160,14 +164,17 @@ int main(void)
 			_delay_ms(50);
 			if(((1 << VBATT_OK) & VBATT_OK_PIN))
 				break;
+			watch_dog_switch(false);
 			while(!((1 << VBATT_OK) & VBATT_OK_PIN))
 			{
 				//flash at ~30Hz to save power yet appear on
 				control_leds(true, false, PWM_PULSE_WIDTH);
-				_delay_ms(13);
+				_delay_ms(VISIBLE_FREQUENCY_mS);
 				control_leds(false, false, 0);
-				_delay_ms(13);
+				_delay_ms(VISIBLE_FREQUENCY_mS);
 			}
+			watch_dog_switch(true);
+			clear_acc_ints();
 		}
 		
 		//ACCELEROMETER DATA IS READY
@@ -214,10 +221,17 @@ int main(void)
 				DDRA &= ~(1 << TRIGGER);
 				DDRB &= ~(1 << ECHO_3V3);
 				_delay_us(SONIC_BRINGUP_TIME_uS);
+				wdt_reset();
 				if(range < MAX_SONAR_DISTANCE && range > MIN_SONAR_DISTANCE)
 				{
+					for(i = 0; i < (SONAR_SAMPLE_RATE_mS / (VISIBLE_FREQUENCY_mS << 1)); i++)
+					{
+						control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
+						_delay_ms(VISIBLE_FREQUENCY_mS);
+						control_leds(false, false, 0);
+						_delay_ms(VISIBLE_FREQUENCY_mS);
+					}
 					control_leds(true, true, PWM_PULSE_WIDTH);	// amber LED on, normal use
-					_delay_ms(SONAR_SAMPLE_RATE_mS);
 				}
 				else
 				{
@@ -242,6 +256,8 @@ int main(void)
 			
 			driving = check_moving();
 			go_to_sleep = true;		//go into driving state mode
+			watch_dog_switch(true);
+			
 		}
 		
 		//UNIT NEEDS TO GO TO DEEP SLEEP
@@ -265,11 +281,19 @@ int main(void)
 //#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
 void setup()
 {
+	cli();
 	//initialize the pins
 	initialize_pins();
-	toggle_led(WORKING_TOGGLES, FAST_TOGGLE);	
 	
-	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
+	if(MCUSR & (1 << WDRF))	// Reset caused by watchdog timer
+	{
+		watch_dog_switch(false);
+		toggle_led(10, FAST_TOGGLE);
+	}
+	else
+	{
+		toggle_led(WORKING_TOGGLES, FAST_TOGGLE);		
+	}
 	
 	got_slp_wake = false;
 	got_data_acc = false;
@@ -279,7 +303,7 @@ void setup()
 	ADCSRA = 0;	//disable ADC
 	
 	if (!(accel.readRegister(WHO_AM_I) == 0x2A)) 	// WHO_AM_I should always be 0x2A
-		while(1){toggle_led(1, FAST_TOGGLE);}	// if accelerometer is broken, just blink continually
+		while(1){toggle_led(1, SLOW_TOGGLE);}	// if accelerometer is broken, just blink continually
 	
 	init_accelerometer();
 	
@@ -288,9 +312,10 @@ void setup()
 	
 	//turn off the red LED
 	control_leds(false, false, 0);
-	clear_acc_ints();
-	_delay_ms(500);
+	watch_dog_switch(true);
+	sei();								//ENABLE EXTERNAL INTERRUPT FOR WAKEUP
 	enable_int(ALL_INTS);
+	clear_acc_ints();
 }
 
 
@@ -493,6 +518,7 @@ void deep_sleep_handler(bool driving)
 	}
 	else
 	{
+		watch_dog_switch(false);
 		CE_REG_PORT &= ~(1 << CE_REG);
 		_delay_us(SONIC_BRINGUP_TIME_uS);
 		enable_int(INT1_PCIE);
@@ -510,6 +536,34 @@ void deep_sleep_handler(bool driving)
 		_delay_us(SONIC_BRINGUP_TIME_uS);
 	}
 	
+}
+
+//#START_FUNCTION_HEADER//////////////////////////////////////////////////////
+//#
+//# Description: 	Turns the wdt off in the sequenced order
+//#
+//# Parameters:		None
+//#
+//# Returns: 		Nothing
+//#
+//#//END_FUNCTION_HEADER////////////////////////////////////////////////////////
+void watch_dog_switch(bool on)
+{	
+	cli();
+	MCUSR &= ~(1 << WDRF);
+	if(on)
+	{	
+		//setup watch dog timer
+		WDTCSR |= (1 << WDE);
+		WDTCSR &= ~(1 << WDIE);	//reset when wdt occurs
+		WDTCSR |= (1 << WDP2) | (1 << WDP1);	// wdt every 1s
+	}
+	else
+	{
+		CCP = 0xD8;
+		WDTCSR = 0x00;
+	}
+	sei();
 }
 
 //#START_FUNCTION_HEADER//////////////////////////////////////////////////////
