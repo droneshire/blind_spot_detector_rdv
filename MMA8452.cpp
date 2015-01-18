@@ -85,7 +85,7 @@ void MMA8452::readAccelData(int * destination)
   }
 }
 
-void MMA8452::initMMA8452(unsigned char fsr, unsigned char dr, unsigned char sr, unsigned int sc, unsigned char mt, unsigned char mdc)
+void MMA8452::initMMA8452(unsigned char fsr, unsigned char dr, unsigned char sr, unsigned char sc, unsigned char mt, unsigned char mdc)
 {
 	MMA8452Standby();
 	//Set up the full scale range to 2, 4, or 8g.

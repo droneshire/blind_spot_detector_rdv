@@ -22,6 +22,6 @@ class MMA8452
 		unsigned char readRegister(unsigned char address);
 		void readRegisters(unsigned char address, int i, unsigned char * dest);
 		void readAccelData(int * destination);
-		void initMMA8452(unsigned char fsr, unsigned char dr, unsigned char sr, unsigned int sc, unsigned char mt, unsigned char mdc);	
+		void initMMA8452(unsigned char fsr, unsigned char dr, unsigned char sr, unsigned char sc, unsigned char mt, unsigned char mdc);	
 };
 #endif
