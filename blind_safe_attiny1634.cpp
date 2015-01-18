@@ -93,7 +93,7 @@
 /************************************************************************/
 #define ACCEL_ADDR				0x1C	// I2C address for first accelerometer
 #define SCALE					0x08	// Sets full-scale range to +/-2, 4, or 8g. Used to calc real g values.
-#define DATARATE				0x07	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
+#define DATARATE				0x06	// 0=800Hz, 1=400, 2=200, 3=100, 4=50, 5=12.5, 6=6.25, 7=1.56
 #define SLEEPRATE				0x03	// 0=50Hz, 1=12.5, 2=6.25, 3=1.56
 #define ASLP_TIMEOUT 			30		// Sleep timeout value until SLEEP ODR if no activity detected 640ms/LSB
 #define MOTION_THRESHOLD		16		// 0.063g/LSB for MT interrupt (16 is minimum to overcome gravity effects)
@@ -358,7 +358,7 @@ bool check_moving()
 		still = false;
 		break;
 	}
-	clear_acc_ints();			//clear interrupts at the end of this handler
+	//clear_acc_ints();			//clear interrupts at the end of this handler
 
 	return (still ? false : true);
 }
@@ -626,6 +626,7 @@ ISR(PCINT2_vect)
 	if((INT1_PIN & (1 << INT1_ACC)))
 	{
 		got_slp_wake = true;
+		enable_int(INT2_PCINT);
 	}
 	sei();
 }
