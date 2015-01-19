@@ -261,10 +261,7 @@ int main(void)
 		}
 		
 		//UNIT NEEDS TO GO TO DEEP SLEEP
-		if(go_to_sleep)
-		{
-			deep_sleep_handler(driving);
-		}
+		deep_sleep_handler(driving);
 	}
 }
 
